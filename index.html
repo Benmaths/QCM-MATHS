@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Plateforme QCM — Votre établissement</title>
+<style>
+body{font-family:Inter,Arial,Helvetica,sans-serif;max-width:1000px;margin:20px auto;padding:18px}
+.hidden{display:none}
+button{padding:8px 12px;margin:6px}
+.qcm-item{margin:10px 0;padding:12px;border:1px solid #ddd;border-radius:6px}
+.correct{color:green;font-weight:700}
+.incorrect{color:red;font-weight:700}
+.admin-note{background:#fff7cc;padding:10px;border:1px solid #ffd24d}
+textarea{width:100%;min-height:120px}
+</style>
+</head>
+<body>
+<h1>Plateforme QCM — Prototype</h1>
+
+<div id="login-section">
+  <h2>Connexion élève</h2>
+  <label>Nom : <input id="nom" type="text"></label><br><br>
+  <label>Prénom : <input id="prenom" type="text"></label><br><br>
+  <button onclick="login()">Se connecter</button>
+  <p class="admin-note">Remarque : si vous êtes admin, ouvrez l'URL contenant le <strong>hash secret</strong> pour accéder au panneau administrateur (Option C). Exemple : <code>#admin-SECRET123</code></p>
+</div>
+
+<div id="menu-section" class="hidden">
+  <h2>Bienvenue, <span id="user-name"></span></h2>
+  <h3>Choisissez un QCM :</h3>
+  <div id="qcm-list"></div>
+</div>
+
+<div id="qcm-section" class="hidden">
+  <h2 id="qcm-title"></h2>
+  <form id="qcm-form"></form>
+  <button onclick="submitQCM()">Valider le QCM</button>
+  <button onclick="backToMenu()">Abandonner</button>
+</div>
+
+<div id="result-section" class="hidden">
+  <h2>Résultats</h2>
+  <div id="result-display"></div>
+  <button onclick="backToMenu()">Retour au menu</button>
+</div>
+
+<!-- Panneau admin (accessible via hash secret, Option C) -->
+<div id="admin-panel" class="hidden">
+  <h2>Administration (URL secrète)</h2>
+  <p>Dans ce panneau vous pouvez : <strong>coller ou téléverser</strong> un fichier JSON contenant vos QCM, définir la liste d'élèves autorisés par QCM, et indiquer l'URL du webhook (Google Apps Script).</p>
+
+  <h3>1) Webhook Google (Apps Script)</h3>
+  <p>URL du webhook (Apps Script) : <input id="webhook-url" style="width:70%"></p>
+  <button onclick="saveWebhook()">Enregistrer webhook</button>
+
+  <h3>2) Importer / coller vos QCM (format JSON)</h3>
+  <p>Collez ici le JSON exporté depuis Word (ou déposez un fichier via 'Téléverser') :</p>
+  <textarea id="json-input" placeholder='[ {"id":"qcm1","titre":"Titre","autorises":["Nom Prénom"],"questions":[{"texte":"...","reponses":["A","B"],"correcte":0}] } ]'></textarea>
+  <br>
+  <input type="file" id="json-file" accept="application/json">
+  <br>
+  <button onclick="loadJSONFromTextarea()">Charger ce JSON</button>
+  <button onclick="downloadCurrentJSON()">Télécharger JSON actuel</button>
+
+  <h3>3) Édition des autorisations par QCM</h3>
+  <div id="auth-editor"></div>
+
+  <h3>4) Instructions : Apps Script + Macro Word</h3>
+  <details>
+    <summary>Voir le code Google Apps Script (coller dans Extensions → Apps Script)</summary>
+    <pre id="gas-code">/**
+ * Exemple Apps Script pour recevoir les résultats POST et les inscrire dans une feuille Google Sheets.
+ */
+function doPost(e) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Réponses');
+    if (!sheet) { sheet = ss.insertSheet('Réponses'); sheet.appendRow(['Horodatage','Eleve','QCM','Score','Détails']); }
+    var data = JSON.parse(e.postData.contents);
+    var horodate = new Date();
+    sheet.appendRow([horodate.toLocaleString('fr-FR'), data.eleve, data.qcm, data.score, JSON.stringify(data.details)]);
+    return ContentService.createTextOutput(JSON.stringify({result:'ok'})).setMimeType(ContentService.MimeType.JSON);
+  } catch(err) {
+    return ContentService.createTextOutput(JSON.stringify({result:'error', message:err.toString()})).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+</pre>
+  </details>
+
+  <details>
+    <summary>Voir la macro VBA Word (export JSON)</summary>
+    <pre id="vba-code">Sub ExporterQCMenJSON()
+' Voir plus bas dans le guide comment gérer les équations (images ou LaTeX).
+Dim doc As Document, para As Paragraph
+Dim questions As New Collection
+Dim mode As String
+mode = ""
+Set doc = ActiveDocument
+Dim curQ As Object
+
+For Each para In doc.Paragraphs
+    Dim t As String: t = Trim(para.Range.Text)
+    If t = "[Q]" Then
+        Set curQ = CreateObject("Scripting.Dictionary")
+        curQ("texte") = ""
+        curQ("reponses") = CreateObject("System.Collections.ArrayList")
+        curQ("id") = "qcm_" & Format(Now,"yyyymmddhhmmss") & "_" & questions.Count
+        mode = "Q"
+    ElseIf t = "[R]" Then
+        mode = "R"
+    ElseIf t = "[/R]" Then
+        questions.Add curQ
+        mode = ""
+    Else
+        If mode = "Q" Then curQ("texte") = curQ("texte") & Replace(para.Range.Text, vbCr, "\n")
+        If mode = "R" Then curQ("reponses").Add Replace(para.Range.Text, vbCr, "\n")
+    End If
+Next
+
+' Construire JSON
+Dim json As String
+json = "[" & vbCrLf
+Dim i As Long
+For i = 1 To questions.Count
+    Dim q: Set q = questions(i)
+    json = json & "  {" & vbCrLf
+    json = json & "    ""id"": """ & q("id") & """," & vbCrLf
+    json = json & "    ""titre"": ""Titre à compléter""," & vbCrLf
+    json = json & "    ""autorises"": []," & vbCrLf
+    json = json & "    ""questions"": [" & vbCrLf
+    json = json & "      {" & vbCrLf
+    json = json & "        ""texte"": """ & Replace(q("texte"), """", "\""") & """," & vbCrLf
+    json = json & "        ""reponses"": ["
+    Dim j As Long
+    For j = 0 To q("reponses").Count - 1
+        json = json & """" & Replace(q("reponses")(j), """", "\""") & """"
+        If j < q("reponses").Count - 1 Then json = json & ","
+    Next
+    json = json & "]," & vbCrLf
+    json = json & "        ""correcte"": 0" & vbCrLf
+    json = json & "      }" & vbCrLf
+    json = json & "    ]" & vbCrLf
+    json = json & "  }"
+    If i < questions.Count Then json = json & ","
+    json = json & vbCrLf
+Next
+json = json & "]"
+
+' Enregistrer dans un fichier
+Dim fso As Object: Set fso = CreateObject("Scripting.FileSystemObject")
+Dim chemin As String: chemin = Environ("USERPROFILE") & "\Desktop\qcms_export.json"
+Dim ts As Object: Set ts = fso.CreateTextFile(chemin, True)
+ts.Write json
+ts.Close
+MsgBox "Export terminé : " & chemin & vbCrLf & "Note : complétez manuellement 'titre', 'autorises' et 'correcte' si besoin."
+End Sub</pre>
+  </details>
+
+  <p><button onclick="closeAdmin()">Fermer admin</button></p>
+</div>
+
+<script>
+// ---------------------
+// Config & stockage
+// ---------------------
+const ADMIN_HASH_PREFIX = 'admin-'; // l'URL doit contenir #admin-SECRET
+const LOCAL_QCMS_KEY = 'qcms_data_v1';
+const LOCAL_WEBHOOK_KEY = 'qcms_webhook_url';
+
+// Charger qcms depuis localStorage ou fichier demo
+function loadQCMs() {
+  const local = localStorage.getItem(LOCAL_QCMS_KEY);
+  if (local) return JSON.parse(local);
+  // Demo par défaut
+  return [
+    { id:'qcm1', titre:'QCM Exemple', autorises:['Dupont Alice','Martin Leo'], questions:[{texte:'Combien font 2+2 ?', reponses:['3','4','5'], correcte:1}] }
+  ];
+}
+
+function saveQCMs(qcms) { localStorage.setItem(LOCAL_QCMS_KEY, JSON.stringify(qcms)); }
+
+function saveWebhookUrl(url){ localStorage.setItem(LOCAL_WEBHOOK_KEY, url); }
+function loadWebhookUrl(){ return localStorage.getItem(LOCAL_WEBHOOK_KEY) || ''; }
+
+let QCMS = loadQCMs();
+let webhookUrl = loadWebhookUrl();
+let currentUser = null; let currentQCM = null;
+
+// ---------------------
+// Affichage & navigation
+// ---------------------
+function login(){
+  const nom = document.getElementById('nom').value.trim();
+  const prenom = document.getElementById('prenom').value.trim();
+  if(!nom||!prenom){alert('Veuillez entrer nom et prénom.');return}
+  currentUser = nom + ' ' + prenom;
+  document.getElementById('login-section').classList.add('hidden');
+  document.getElementById('menu-section').classList.remove('hidden');
+  document.getElementById('user-name').innerText = currentUser;
+  renderQCMList();
+}
+
+function renderQCMList(){
+  const list = document.getElementById('qcm-list'); list.innerHTML='';
+  QCMS.forEach(q=>{
+    const div=document.createElement('div'); div.className='qcm-item';
+    const h=document.createElement('div'); h.innerHTML='<strong>'+q.titre+'</strong>';
+    const p=document.createElement('div');
+    // Indiquer si l'élève est autorisé
+    const autor = q.autorises && q.autorises.includes(currentUser);
+    p.innerHTML = autor? '<em>Vous êtes autorisé</em>' : '<em>Accès restreint</em>';
+    const btn=document.createElement('button'); btn.innerText='Accéder'; btn.onclick=()=>lancerQCM(q.id);
+    div.appendChild(h); div.appendChild(p); div.appendChild(btn);
+    list.appendChild(div);
+  });
+}
+
+function lancerQCM(id){
+  currentQCM = QCMS.find(x=>x.id===id);
+  if(!currentQCM){alert('QCM introuvable'); return}
+  // Vérifier autorisation
+  if(currentQCM.autorises && currentQCM.autorises.length>0 && !currentQCM.autorises.includes(currentUser)){
+    alert('Vous n\\'êtes pas autorisé à faire ce QCM.'); return;
+  }
+  document.getElementById('menu-section').classList.add('hidden');
+  document.getElementById('qcm-section').classList.remove('hidden');
+  document.getElementById('qcm-title').innerText = currentQCM.titre;
+
+  const form = document.getElementById('qcm-form'); form.innerHTML='';
+  currentQCM.questions.forEach((q,i)=>{
+    const wrapper=document.createElement('div'); wrapper.className='qcm-item';
+    const title=document.createElement('p'); title.innerHTML = '<strong>Q'+(i+1)+':</strong> '+q.texte; wrapper.appendChild(title);
+    q.reponses.forEach((r,j)=>{
+      const id = 'q'+i+'r'+j;
+      const label=document.createElement('label');
+      label.innerHTML = `<input type='radio' name='q${i}' value='${j}' id='${id}'> ${r}`;
+      wrapper.appendChild(label); wrapper.appendChild(document.createElement('br'));
+    });
+    form.appendChild(wrapper);
+  });
+}
+
+function submitQCM(){
+  const results = []; let score=0;
+  currentQCM.questions.forEach((q,i)=>{
+    const sel = document.querySelector("input[name='q"+i+"']:checked");
+    const choix = sel? parseInt(sel.value) : null;
+    const correcte = (choix === q.correcte);
+    if(correcte) score++;
+    results.push({question:q.texte, choix:choix, correcte:correcte});
+  });
+  afficherResultats(results, score);
+  envoyerResultats(results, score);
+}
+
+function afficherResultats(results, score){
+  document.getElementById('qcm-section').classList.add('hidden');
+  document.getElementById('result-section').classList.remove('hidden');
+  let html = '<p>Score : <strong>'+score+' / '+results.length+'</strong></p>';
+  results.forEach((r,i)=>{ html += '<p>Q'+(i+1)+': <span class="'+(r.correcte? 'correct':'incorrect')+'">'+(r.correcte? '✔ Correct':'✘ Faux')+'</span></p>'; });
+  document.getElementById('result-display').innerHTML = html;
+}
+
+// ---------------------
+// Envoi vers webhook (Apps Script)
+// ---------------------
+async function envoyerResultats(results, score){
+  const payload = { eleve: currentUser, qcm: currentQCM.id, score: score, details: results, date: new Date().toISOString() };
+  const url = webhookUrl || loadWebhookUrl();
+  if(!url){ console.warn('Webhook non configuré.'); return; }
+  try{
+    const resp = await fetch(url, { method:'POST', body: JSON.stringify(payload), headers: {'Content-Type':'application/json'} });
+    const data = await resp.json();
+    console.log('Webhook response', data);
+  } catch(err){ console.error('Erreur envoi webhook', err); }
+}
+
+function backToMenu(){ document.getElementById('result-section').classList.add('hidden'); document.getElementById('menu-section').classList.remove('hidden'); }
+
+// ---------------------
+// Admin functions
+// ---------------------
+function openAdmin(){
+  document.getElementById('admin-panel').classList.remove('hidden');
+}
+function closeAdmin(){ document.getElementById('admin-panel').classList.add('hidden'); }
+
+function saveWebhook(){ const u = document.getElementById('webhook-url').value.trim(); saveWebhookUrl(u); webhookUrl = u; alert('Webhook enregistré.'); }
+
+function loadAdminData(){ document.getElementById('webhook-url').value = loadWebhookUrl(); document.getElementById('json-input').value = JSON.stringify(QCMS, null, 2); renderAuthEditor(); }
+
+function loadJSONFromTextarea(){ try{ const txt = document.getElementById('json-input').value; const parsed = JSON.parse(txt); QCMS = parsed; saveQCMs(QCMS); alert('QCM chargés en localStorage.'); renderAuthEditor(); }catch(e){ alert('JSON invalide: '+e.message); } }
+
+function downloadCurrentJSON(){ const data = JSON.stringify(QCMS,null,2); const blob = new Blob([data],{type:'application/json'}); const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='qcms_export.json'; a.click(); URL.revokeObjectURL(url); }
+
+// Téléversement de fichier
+document.getElementById('json-file').addEventListener('change', function(e){ const f = e.target.files[0]; if(!f) return; const r = new FileReader(); r.onload = function(ev){ document.getElementById('json-input').value = ev.target.result; }; r.readAsText(f); });
+
+function renderAuthEditor(){ const cont = document.getElementById('auth-editor'); cont.innerHTML=''; QCMS.forEach((q,i)=>{
+  const div = document.createElement('div'); div.style.border='1px solid #eee'; div.style.padding='8px'; div.style.margin='6px 0';
+  div.innerHTML = '<strong>'+q.titre+'</strong>' + '<br>Identifiants autorisés (une par ligne):<br>';
+  const ta = document.createElement('textarea'); ta.value = (q.autorises||[]).join('\n'); ta.dataset.index = i;
+  const saveBtn = document.createElement('button'); saveBtn.innerText='Sauvegarder'; saveBtn.onclick = function(){ const idx = this.previousSibling.dataset.index; QCMS[idx].autorises = this.previousSibling.value.split('\n').map(s=>s.trim()).filter(s=>s); saveQCMs(QCMS); alert('Autorisations mises à jour'); };
+  div.appendChild(ta); div.appendChild(saveBtn);
+  cont.appendChild(div);
+}); }
+
+// ---------------------
+// Admin secret detection (Option C)
+// ---------------------
+(function(){
+  // exemple d'URL : https://.../index.html#admin-SECRET123
+  const hash = location.hash ? location.hash.substring(1) : '';
+  if(hash.startsWith(ADMIN_HASH_PREFIX)){
+    // afficher admin
+    document.getElementById('login-section').classList.add('hidden');
+    openAdmin(); loadAdminData();
+  }
+})();
+</script>
+</body>
+</html>
